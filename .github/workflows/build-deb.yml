@@ -1,0 +1,93 @@
+name: Build DEB
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    env:
+      THEOS: ${{ github.workspace }}/theos
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cài công cụ (ldid, dpkg, make)
+        run: |
+          brew install ldid dpkg make xz
+          echo "$(brew --prefix make)/libexec/gnubin" >> $GITHUB_PATH
+
+      - name: Tải Theos + iOS SDK
+        run: |
+          git clone --recursive --depth=1 https://github.com/theos/theos.git "$THEOS"
+          rm -rf "$THEOS/sdks"
+          git clone --depth=1 https://github.com/theos/sdks.git "$THEOS/sdks"
+
+      - name: Build Cephei (HBPreferences / HBListController)
+        run: |
+          git clone --recursive --depth=1 https://github.com/hbang/Cephei.git /tmp/Cephei
+          cd /tmp/Cephei
+          make stage FINALPACKAGE=1 || make FINALPACKAGE=1
+          mkdir -p "$THEOS/vendor/lib"
+          find . -type d \( -name Cephei.framework -o -name CepheiPrefs.framework \) -path "*/.theos/*" \
+            -exec cp -R {} "$THEOS/vendor/lib/" \;
+          ls "$THEOS/vendor/lib"
+
+      - name: Tải libnotifications
+        run: |
+          git clone --depth=1 https://github.com/CokePokes/libnotifications.git /tmp/libnotifications
+          find /tmp/libnotifications -name "*.h" -exec cp {} "$THEOS/include/" \;
+          # Tweak chỉ dlopen() lúc chạy, nên không cần link lúc build.
+
+      - name: Chuẩn bị project
+        run: |
+          # Tự tìm thư mục chứa Makefile + control (kể cả khi nằm trong thư mục con)
+          CTRL=$(find . -name control -not -path "./theos/*" -not -path "./.git/*" | head -n1)
+          PROJECT_DIR=$(dirname "$CTRL")
+          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
+          cd "$PROJECT_DIR"
+
+          # 1) Theos không cho phép khoảng trắng trong TWEAK_NAME ("Le Manh Ninh")
+          #    -> đổi tên nội bộ, tên hiển thị vẫn lấy từ "Name:" trong file control
+          sed -i '' 's/^TWEAK_NAME = .*/TWEAK_NAME = BatteryFlowReborn/' Makefile
+          sed -i '' 's/Le Manh Ninh/BatteryFlowReborn/g' Makefile
+          [ -f BatteryFlow-Reborn.plist ] && mv BatteryFlow-Reborn.plist BatteryFlowReborn.plist || true
+
+          # 2) Bỏ link tới libnotifications / libnebbs (chỉ cần lúc chạy trên máy, đã có trong Depends)
+          sed -i '' '/_LIBRARIES = notifications/d' Makefile
+          sed -i '' '/_LIBRARIES = nebbs/d' prefs/Makefile
+
+          # 3) Header giả cho NEBLinkCell (class thật nằm trong libnebbs trên thiết bị)
+          cat > "$THEOS/include/NEBLinkCell.h" << 'H'
+          #import <Preferences/PSTableCell.h>
+          @interface NEBLinkCell : PSTableCell
+          @end
+          H
+
+          # 4) Header SpringBoard nếu Theos chưa có
+          if [ ! -f "$THEOS/include/SpringBoard/SpringBoard.h" ]; then
+            mkdir -p "$THEOS/include/SpringBoard"
+            printf '#import <UIKit/UIKit.h>\n' > "$THEOS/include/SpringBoard/SpringBoard.h"
+          fi
+
+      - name: Build .deb
+        run: |
+          cd "$PROJECT_DIR"
+          make clean || true
+          make package FINALPACKAGE=1
+
+      - name: Upload .deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-package
+          path: ${{ env.PROJECT_DIR }}/packages/*.deb
+          if-no-files-found: error
+
+      - name: Tạo Release (khi push tag v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.PROJECT_DIR }}/packages/*.deb
