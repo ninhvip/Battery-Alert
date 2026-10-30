@@ -14,5 +14,5 @@ jobs:
         run: make package THEOS_PACKAGE_SCHEME=rootless
       - uses: actions/upload-artifact@v4
         with:
-          name: AppWifiBlock-deb
+          name: Battery
           path: packages/*.deb
