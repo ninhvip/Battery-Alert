@@ -7,12 +7,31 @@ on:
 jobs:
   build:
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scheme: [rootless, roothide]
     steps:
       - uses: actions/checkout@v4
-      - uses: Randomblock1/theos-action@v1
+
+      - name: Cai Theos (rootless)
+        if: matrix.scheme == 'rootless'
+        uses: Randomblock1/theos-action@v1
+
+      - name: Cai Theos (roothide)
+        if: matrix.scheme == 'roothide'
+        run: |
+          brew install ldid
+          git clone --recursive --depth 1 https://github.com/roothide/theos.git "$HOME/theos"
+          rm -rf "$HOME/theos/sdks"
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git "$HOME/theos/sdks"
+          git -C "$HOME/theos/sdks" sparse-checkout set iPhoneOS16.5.sdk
+          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+
       - name: Build
-        run: make package THEOS_PACKAGE_SCHEME=rootless
+        run: make package THEOS_PACKAGE_SCHEME=${{ matrix.scheme }}
+
       - uses: actions/upload-artifact@v4
         with:
-          name: Battery
+          name: BatteryFlow-${{ matrix.scheme }}
           path: packages/*.deb
